@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ระบบยืมคืนอุปกรณ์วิทยาศาสตร์</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+:root{--bg:#f2f6f5;--card:#fff;--ink:#14302f;--mute:#5d7472;--line:#d5e0de;--pri:#0f6b66;--priInk:#fff;--ok:#1f8a5b;--warn:#b7791f;--bad:#c23b34;}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1a1a;--card:#162626;--ink:#e6f1ef;--mute:#8fa9a6;--line:#2a3f3e;--pri:#3cb8ad;--priInk:#06201e;--ok:#4cc58d;--warn:#e0a640;--bad:#ef7770;}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:'Noto Sans Thai',system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;padding-top:env(safe-area-inset-top,0px)}
+button,input,select,textarea{font:inherit;color:inherit}
+.wrap{max-width:720px;margin:0 auto;padding:16px 16px 96px}
+header.top{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 16px;background:var(--pri);color:var(--priInk)}
+header.top b{font-size:1.05rem}
+header.top small{display:block;opacity:.85}
+.btn{border:0;border-radius:8px;padding:10px 16px;background:var(--pri);color:var(--priInk);font-weight:600;cursor:pointer}
+.btn.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.bad{background:var(--bad);color:#fff}
+.btn.sm{padding:5px 10px;font-size:.85rem}
+.btn:disabled{opacity:.5}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+label{display:block;font-size:.85rem;color:var(--mute);margin:10px 0 4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0}
+.row{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.row>div:first-child{min-width:0}
+.mute{color:var(--mute);font-size:.88rem}
+.chip{display:inline-block;padding:1px 10px;border-radius:99px;font-size:.78rem;font-weight:600;border:1px solid currentColor}
+.chip.available,.chip.returned,.chip.borrowed{color:var(--ok)}
+.chip.pending{color:var(--warn)}.chip.overdue,.chip.repair,.chip.rejected,.chip.written_off{color:var(--bad)}
+.chip.borrowed.eq{color:var(--warn)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav.tabs button{flex:1;border:0;background:none;padding:12px 4px;color:var(--mute);font-weight:600;cursor:pointer}
+nav.tabs button.on{color:var(--pri);box-shadow:inset 0 3px 0 var(--pri)}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:flex-end;justify-content:center;z-index:20}
+#modal.open{display:flex}
+#modal .sheet{background:var(--bg);width:100%;max-width:560px;max-height:90vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+#toast{position:fixed;left:50%;top:calc(12px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;z-index:30;display:none;max-width:90%}
+#reader{width:100%;max-width:360px;margin:12px auto}
+.login{max-width:360px;margin:12vh auto 0;padding:0 16px}
+.login h1{font-size:1.4rem;margin:0 0 4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+</style>
+</head>
+<body>
+<div id="toast" role="status"></div>
+<div id="app"></div>
+<div id="modal"><div class="sheet" id="sheet"></div></div>
+
+<script>
+/* ===== ตั้งค่า: วาง URL ของ Web App (ลงท้าย /exec) ===== */
+const API_URL = 'PASTE_WEB_APP_URL_HERE';
+
+const STAFF = ['teacher','lab_staff','head','admin'];
+const APPROVER = ['teacher','head','admin'];
+const MANAGER = ['lab_staff','head','admin'];
+const ROLE_TH = {student:'นักเรียน',teacher:'ครู',lab_staff:'เจ้าหน้าที่ห้องปฏิบัติการ',head:'หัวหน้ากลุ่มสาระ',admin:'ผู้ดูแลระบบ'};
+const ST_TH = {available:'ว่าง',borrowed:'ถูกยืม',repair:'ซ่อม',written_off:'จำหน่ายแล้ว',pending:'รออนุมัติ',overdue:'เกินกำหนด',returned:'คืนแล้ว',rejected:'ไม่อนุมัติ'};
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const d10 = s => String(s || '').slice(0, 10);
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+  del: k => { try { localStorage.removeItem(k); } catch (e) {} }
+};
+let S = { user: null, items: [], cats: [], tab: 'equip', q: '', scanner: null };
+
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 3000);
+}
+async function api(action, payload = {}) {
+  let r;
+  try {
+    r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action, payload, token: store.get('tk') }) }).then(x => x.json());
+  } catch (e) { throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ตรวจสอบอินเทอร์เน็ตหรือ API_URL'); }
+  if (!r.ok) {
+    if (r.error === 'AUTH') { logout(true); throw new Error('หมดเวลาเข้าสู่ระบบ กรุณาเข้าสู่ระบบใหม่'); }
+    throw new Error(r.error);
+  }
+  return r.data;
+}
+async function run(btn, fn) {           // กันกดซ้ำ + แสดงข้อผิดพลาด
+  if (btn) btn.disabled = true;
+  try { await fn(); } catch (e) { toast(e.message); } finally { if (btn) btn.disabled = false; }
+}
+
+/* ===== Login ===== */
+function logout(silent) {
+  store.del('tk'); store.del('user'); S.user = null; stopScan(); closeModal(); renderLogin();
+  if (!silent) toast('ออกจากระบบแล้ว');
+}
+function renderLogin() {
+  $('#app').innerHTML = `<div class="login"><h1>ยืมคืนอุปกรณ์วิทยาศาสตร์</h1>
+  <p class="mute">เข้าสู่ระบบด้วยรหัสประจำตัวและ PIN</p>
+  <label>รหัสผู้ใช้</label><input id="uid" autocomplete="username" inputmode="text">
+  <label>PIN</label><input id="pin" type="password" autocomplete="current-password" inputmode="numeric">
+  <p><button class="btn" id="goLogin" style="width:100%">เข้าสู่ระบบ</button></p></div>`;
+  const go = e => run(e && e.target.tagName === 'BUTTON' ? e.target : $('#goLogin'), async () => {
+    const d = await api('login', { user_id: $('#uid').value, pin: $('#pin').value });
+    store.set('tk', d.token); store.set('user', JSON.stringify(d.user)); S.user = d.user; startApp();
+  });
+  $('#goLogin').onclick = go;
+  $('#pin').onkeydown = e => { if (e.key === 'Enter') go(); };
+}
+
+/* ===== Shell ===== */
+async function startApp() {
+  S.tab = 'equip';
+  $('#app').innerHTML = `<header class="top"><div><b>ระบบยืมคืนอุปกรณ์วิทย์</b>
+    <small>${esc(S.user.name)} · ${esc(ROLE_TH[S.user.role] || S.user.role)}</small></div>
+    <button class="btn sec sm" style="color:inherit;border-color:currentColor" id="out">ออกจากระบบ</button></header>
+    <div class="wrap" id="view"></div><nav class="tabs" id="tabs"></nav>`;
+  $('#out').onclick = () => logout();
+  const tabs = [['equip','อุปกรณ์'],['scan','สแกน QR'],['mine','ของฉัน']];
+  if (STAFF.indexOf(S.user.role) >= 0) tabs.push(['manage','จัดการ']);
+  $('#tabs').innerHTML = tabs.map(t => `<button data-t="${t[0]}">${t[1]}</button>`).join('');
+  $('#tabs').onclick = e => { const b = e.target.closest('button'); if (b) go(b.dataset.t); };
+  await go('equip');
+}
+async function go(tab) {
+  stopScan(); S.tab = tab;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  $('#view').innerHTML = '<p class="mute">กำลังโหลด…</p>';
+  try { await ({ equip: vEquip, scan: vScan, mine: vMine, manage: vManage })[tab](); }
+  catch (e) { $('#view').innerHTML = `<p class="mute">${esc(e.message)}</p>`; }
+}
+
+/* ===== รายการอุปกรณ์ ===== */
+async function vEquip() {
+  const d = await api('listEquipment'); S.items = d.items; S.cats = d.categories;
+  $('#view').innerHTML = `<input id="q" placeholder="ค้นหาชื่อ รหัส หรือที่เก็บ" value="${esc(S.q)}"><div id="list"></div>`;
+  const draw = () => {
+    S.q = $('#q').value.trim().toLowerCase();
+    const rows = S.items.filter(i => (i.name + i.eq_id + i.location).toLowerCase().includes(S.q));
+    $('#list').innerHTML = rows.length ? rows.map(i => `<div class="card"><div class="row">
+      <div><b>${esc(i.name)}</b><div class="mute">${esc(i.eq_id)} · ${esc(i.location || 'ไม่ระบุที่เก็บ')}</div>
+      <div class="mute">คงเหลือ ${esc(i.qty_available)} / ${esc(i.qty_total)}</div></div>
+      <div style="text-align:right"><span class="chip ${esc(i.status)}">${esc(ST_TH[i.status] || i.status)}</span><br>
+      <button class="btn sm" style="margin-top:8px" data-eq="${esc(i.eq_id)}">ดู / ยืม</button></div></div></div>`).join('')
+      : '<p class="mute">ยังไม่มีอุปกรณ์ที่ตรงกับคำค้น ผู้จัดการห้องปฏิบัติการเพิ่มอุปกรณ์ได้ที่แท็บ "จัดการ"</p>';
+  };
+  $('#q').oninput = draw; draw();
+  $('#list').onclick = e => { const b = e.target.closest('[data-eq]'); if (b) openEq(b.dataset.eq); };
+}
+
+/* ===== รายละเอียด + ยืม + คืน ===== */
+function openModal(html) { $('#sheet').innerHTML = html; $('#modal').classList.add('open'); }
+function closeModal() { $('#modal').classList.remove('open'); $('#sheet').innerHTML = ''; }
+$('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
+
+async function openEq(id) {
+  try {
+    const d = await api('getEquipment', { eq_id: String(id).trim() }), i = d.item, staff = STAFF.indexOf(S.user.role) >= 0;
+    const can = i.status !== 'repair' && i.status !== 'written_off' && Number(i.qty_available) > 0;
+    const direct = !(S.user.role === 'student' || i.requires_approval === true) || APPROVER.indexOf(S.user.role) >= 0;
+    openModal(`<div class="row"><b style="font-size:1.1rem">${esc(i.name)}</b><button class="btn sec sm" id="cl">ปิด</button></div>
+      <p class="mute">${esc(i.eq_id)} · ${esc(i.location || 'ไม่ระบุที่เก็บ')} · คงเหลือ ${esc(i.qty_available)}/${esc(i.qty_total)}
+      <span class="chip ${esc(i.status)} eq">${esc(ST_TH[i.status] || i.status)}</span></p>
+      ${i.description ? `<p>${esc(i.description)}</p>` : ''}
+      ${i.requires_approval === true ? '<p class="mute">อุปกรณ์นี้ต้องได้รับการอนุมัติจากครูก่อนยืม</p>' : ''}
+      ${can ? `<div class="card"><div class="grid2"><div><label>จำนวน</label><input id="bq" type="number" min="1" max="${esc(i.qty_available)}" value="1"></div>
+      <div><label>ยืมกี่วัน</label><input id="bd" type="number" min="1" value="3"></div></div>
+      ${staff ? '<label>รหัสผู้ยืม (เว้นว่าง = ตัวเอง)</label><input id="bu">' : ''}
+      <p><button class="btn" id="bb" style="width:100%">${direct ? 'ยืมเลย' : 'ส่งคำขอยืม'}</button></p></div>`
+      : '<p class="mute">ตอนนี้ยืมไม่ได้ (ของหมดหรืออยู่ระหว่างซ่อม)</p>'}
+      ${staff && d.loans.length ? '<h4>กำลังถูกยืม</h4>' + d.loans.map(loanRow).join('') : ''}
+      <div id="qr" style="display:flex;justify-content:center;padding:12px"></div>
+      <p class="mute" style="text-align:center">QR ของอุปกรณ์นี้ (เก็บรหัส ${esc(i.eq_id)})</p>`);
+    $('#cl').onclick = closeModal;
+    new QRCode($('#qr'), { text: String(i.eq_id), width: 150, height: 150 });
+    const bb = $('#bb');
+    if (bb) bb.onclick = () => run(bb, async () => {
+      const r = await api('borrow', { eq_id: i.eq_id, qty: $('#bq').value, days: $('#bd').value, user_id: $('#bu') ? $('#bu').value : '' });
+      toast(r.status === 'pending' ? 'ส่งคำขอแล้ว รอครูอนุมัติ' : 'บันทึกการยืมแล้ว คืนภายใน ' + d10(r.due_date));
+      closeModal(); go(S.tab);
+    });
+    bindLoanActions($('#sheet'));
+  } catch (e) { toast(e.message); }
+}
+
+/* ===== แถวรายการยืม + ปุ่มคืน/อนุมัติ ===== */
+function loanRow(l) {
+  const staff = STAFF.indexOf(S.user.role) >= 0;
+  let act = '';
+  if (staff && l.status === 'pending' && APPROVER.indexOf(S.user.role) >= 0)
+    act = `<button class="btn sm" data-ap="${esc(l.loan_id)}">อนุมัติ</button> <button class="btn sec sm" data-rj="${esc(l.loan_id)}">ไม่อนุมัติ</button>`;
+  if (staff && (l.status === 'borrowed' || l.status === 'overdue'))
+    act = `<select data-cond="${esc(l.loan_id)}" style="width:auto;padding:5px"><option value="good">สภาพดี</option><option value="fair">พอใช้</option><option value="damaged">ชำรุด</option></select>
+           <button class="btn sm" data-rt="${esc(l.loan_id)}">รับคืน</button>`;
+  return `<div class="card"><div class="row"><div><b>${esc(l.eq_name)}</b> × ${esc(l.qty)}
+    <div class="mute">${esc(l.user_name)} (${esc(l.user_id)}) · กำหนดคืน ${esc(d10(l.due_date))}</div></div>
+    <span class="chip ${esc(l.status)}">${esc(ST_TH[l.status] || l.status)}</span></div>
+    ${act ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${act}</div>` : ''}</div>`;
+}
+function bindLoanActions(root) {
+  root.onclick = e => {
+    const b = e.target.closest('button[data-ap],button[data-rj],button[data-rt]'); if (!b) return;
+    run(b, async () => {
+      if (b.dataset.rt) {
+        const sel = root.querySelector(`select[data-cond="${b.dataset.rt}"]`);
+        await api('returnItem', { loan_id: b.dataset.rt, condition_in: sel.value });
+        toast(sel.value === 'damaged' ? 'รับคืนแล้ว และบันทึกแจ้งชำรุด' : 'รับคืนเรียบร้อย');
+      } else {
+        await api('approveLoan', { loan_id: b.dataset.ap || b.dataset.rj, reject: !!b.dataset.rj });
+        toast(b.dataset.rj ? 'ปฏิเสธคำขอแล้ว' : 'อนุมัติแล้ว');
+      }
+      closeModal(); go(S.tab);
+    });
+  };
+}
+
+/* ===== สแกน QR ===== */
+function stopScan() {
+  if (S.scanner) { const s = S.scanner; S.scanner = null; s.stop().then(() => s.clear()).catch(() => {}); }
+}
+async function vScan() {
+  $('#view').innerHTML = `<div class="card"><div id="reader"></div><p class="mute" id="sm">กำลังเปิดกล้อง…</p></div>
+    <div class="card"><label>หรือพิมพ์รหัสอุปกรณ์</label><div class="row"><input id="man" placeholder="เช่น EQ0001">
+    <button class="btn" id="mg">เปิด</button></div></div>`;
+  $('#mg').onclick = () => { if ($('#man').value.trim()) openEq($('#man').value); };
+  try {
+    const sc = new Html5Qrcode('reader'); S.scanner = sc;
+    await sc.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, txt => { stopScan(); openEq(txt); });
+    $('#sm').textContent = 'เล็งกล้องไปที่ QR บนอุปกรณ์';
+  } catch (e) { S.scanner = null; $('#sm').textContent = 'เปิดกล้องไม่ได้ อนุญาตการใช้กล้องในเบราว์เซอร์ หรือพิมพ์รหัสด้านล่างแทน'; }
+}
+
+/* ===== ของฉัน ===== */
+async function vMine() {
+  const rows = await api('myLoans');
+  $('#view').innerHTML = '<h3>ประวัติการยืมของฉัน</h3>' +
+    (rows.length ? rows.map(loanRow).join('') : '<p class="mute">ยังไม่มีรายการยืม เลือกอุปกรณ์ที่แท็บ "อุปกรณ์" หรือสแกน QR เพื่อเริ่มยืม</p>');
+}
+
+/* ===== จัดการ (ครู/เจ้าหน้าที่/แอดมิน) ===== */
+async function vManage() {
+  const loans = await api('activeLoans'), r = S.user.role;
+  if (!S.cats.length) S.cats = (await api('listEquipment')).categories;
+  $('#view').innerHTML = `<h3>รายการค้าง (${loans.length})</h3><div id="ml">${loans.length ? loans.map(loanRow).join('') : '<p class="mute">ไม่มีรายการค้าง</p>'}</div>
+  ${MANAGER.indexOf(r) >= 0 ? `<h3>เพิ่มอุปกรณ์</h3><div class="card">
+    <label>ชื่ออุปกรณ์</label><input id="en"><label>หมวดหมู่</label>
+    <select id="ec">${S.cats.map(c => `<option value="${esc(c.cat_id)}">${esc(c.name)}</option>`).join('')}</select>
+    <div class="grid2"><div><label>ที่เก็บ</label><input id="el" placeholder="ห้อง/ตู้/ชั้น"></div><div><label>จำนวน</label><input id="eqn" type="number" min="1" value="1"></div></div>
+    <label><input type="checkbox" id="ea" style="width:auto"> ต้องได้รับอนุมัติก่อนยืม</label>
+    <p><button class="btn" id="es" style="width:100%">บันทึกอุปกรณ์</button></p></div>` : ''}
+  ${r === 'admin' ? `<h3>เพิ่มผู้ใช้</h3><div class="card"><div class="grid2">
+    <div><label>รหัสผู้ใช้</label><input id="nu"></div><div><label>ชื่อ-สกุล</label><input id="nn"></div>
+    <div><label>บทบาท</label><select id="nr">${Object.keys(ROLE_TH).map(k => `<option value="${k}">${ROLE_TH[k]}</option>`).join('')}</select></div>
+    <div><label>ห้อง/ชั้น</label><input id="nc"></div></div>
+    <label>PIN (อย่างน้อย 4 หลัก)</label><input id="np" type="password" inputmode="numeric">
+    <p><button class="btn" id="us" style="width:100%">บันทึกผู้ใช้</button></p></div>` : ''}`;
+  bindLoanActions($('#view'));
+  if ($('#es')) $('#es').onclick = () => run($('#es'), async () => {
+    const d = await api('saveEquipment', { name: $('#en').value, cat_id: $('#ec').value, location: $('#el').value,
+      qty_total: $('#eqn').value, requires_approval: $('#ea').checked });
+    toast('เพิ่มอุปกรณ์แล้ว รหัส ' + d.eq_id); $('#en').value = ''; $('#el').value = '';
+  });
+  if ($('#us')) $('#us').onclick = () => run($('#us'), async () => {
+    await api('addUser', { user_id: $('#nu').value, name: $('#nn').value, role: $('#nr').value, class_room: $('#nc').value, pin: $('#np').value });
+    toast('บันทึกผู้ใช้แล้ว'); ['nu','nn','nc','np'].forEach(k => $('#' + k).value = '');
+  });
+}
+
+/* ===== เริ่มต้น ===== */
+(function init() {
+  try { S.user = JSON.parse(store.get('user') || 'null'); } catch (e) { S.user = null; }
+  if (S.user && store.get('tk')) startApp(); else renderLogin();
+})();
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ระบบยืมคืนอุปกรณ์วิทยาศาสตร์</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+:root{--bg:#f2f6f5;--card:#fff;--ink:#14302f;--mute:#5d7472;--line:#d5e0de;--pri:#0f6b66;--priInk:#fff;--ok:#1f8a5b;--warn:#b7791f;--bad:#c23b34;}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1a1a;--card:#162626;--ink:#e6f1ef;--mute:#8fa9a6;--line:#2a3f3e;--pri:#3cb8ad;--priInk:#06201e;--ok:#4cc58d;--warn:#e0a640;--bad:#ef7770;}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:'Noto Sans Thai',system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;padding-top:env(safe-area-inset-top,0px)}
+button,input,select,textarea{font:inherit;color:inherit}
+.wrap{max-width:720px;margin:0 auto;padding:16px 16px 96px}
+header.top{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 16px;background:var(--pri);color:var(--priInk)}
+header.top b{font-size:1.05rem}
+header.top small{display:block;opacity:.85}
+.btn{border:0;border-radius:8px;padding:10px 16px;background:var(--pri);color:var(--priInk);font-weight:600;cursor:pointer}
+.btn.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.bad{background:var(--bad);color:#fff}
+.btn.sm{padding:5px 10px;font-size:.85rem}
+.btn:disabled{opacity:.5}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+label{display:block;font-size:.85rem;color:var(--mute);margin:10px 0 4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0}
+.row{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.row>div:first-child{min-width:0}
+.mute{color:var(--mute);font-size:.88rem}
+.chip{display:inline-block;padding:1px 10px;border-radius:99px;font-size:.78rem;font-weight:600;border:1px solid currentColor}
+.chip.available,.chip.returned,.chip.borrowed{color:var(--ok)}
+.chip.pending{color:var(--warn)}.chip.overdue,.chip.repair,.chip.rejected,.chip.written_off{color:var(--bad)}
+.chip.borrowed.eq{color:var(--warn)}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav.tabs button{flex:1;border:0;background:none;padding:12px 4px;color:var(--mute);font-weight:600;cursor:pointer}
+nav.tabs button.on{color:var(--pri);box-shadow:inset 0 3px 0 var(--pri)}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:flex-end;justify-content:center;z-index:20}
+#modal.open{display:flex}
+#modal .sheet{background:var(--bg);width:100%;max-width:560px;max-height:90vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+#toast{position:fixed;left:50%;top:calc(12px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;z-index:30;display:none;max-width:90%}
+#reader{width:100%;max-width:360px;margin:12px auto}
+.login{max-width:360px;margin:12vh auto 0;padding:0 16px}
+.login h1{font-size:1.4rem;margin:0 0 4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+</style>
+</head>
+<body>
+<div id="toast" role="status"></div>
+<div id="app"></div>
+<div id="modal"><div class="sheet" id="sheet"></div></div>
+
+<script>
+/* ===== ตั้งค่า: วาง URL ของ Web App (ลงท้าย /exec) ===== */
+const API_URL = 'https://script.google.com/macros/s/AKfycbzEoj63bpMrJ1niGCUijorgk3etGjGLogK3xTrozav61sbm15wUOm-Y0cIAnQp4oT3n/exec';
+
+const STAFF = ['teacher','lab_staff','head','admin'];
+const APPROVER = ['teacher','head','admin'];
+const MANAGER = ['lab_staff','head','admin'];
+const ROLE_TH = {student:'นักเรียน',teacher:'ครู',lab_staff:'เจ้าหน้าที่ห้องปฏิบัติการ',head:'หัวหน้ากลุ่มสาระ',admin:'ผู้ดูแลระบบ'};
+const ST_TH = {available:'ว่าง',borrowed:'ถูกยืม',repair:'ซ่อม',written_off:'จำหน่ายแล้ว',pending:'รออนุมัติ',overdue:'เกินกำหนด',returned:'คืนแล้ว',rejected:'ไม่อนุมัติ'};
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const d10 = s => String(s || '').slice(0, 10);
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+  del: k => { try { localStorage.removeItem(k); } catch (e) {} }
+};
+let S = { user: null, items: [], cats: [], tab: 'equip', q: '', scanner: null };
+
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 3000);
+}
+async function api(action, payload = {}) {
+  let r;
+  try {
+    r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action, payload, token: store.get('tk') }) }).then(x => x.json());
+  } catch (e) { throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ตรวจสอบอินเทอร์เน็ตหรือ API_URL'); }
+  if (!r.ok) {
+    if (r.error === 'AUTH') { logout(true); throw new Error('หมดเวลาเข้าสู่ระบบ กรุณาเข้าสู่ระบบใหม่'); }
+    throw new Error(r.error);
+  }
+  return r.data;
+}
+async function run(btn, fn) {           // กันกดซ้ำ + แสดงข้อผิดพลาด
+  if (btn) btn.disabled = true;
+  try { await fn(); } catch (e) { toast(e.message); } finally { if (btn) btn.disabled = false; }
+}
+
+/* ===== Login ===== */
+function logout(silent) {
+  store.del('tk'); store.del('user'); S.user = null; stopScan(); closeModal(); renderLogin();
+  if (!silent) toast('ออกจากระบบแล้ว');
+}
+function renderLogin() {
+  $('#app').innerHTML = `<div class="login"><h1>ยืมคืนอุปกรณ์วิทยาศาสตร์</h1>
+  <p class="mute">เข้าสู่ระบบด้วยรหัสประจำตัวและ PIN</p>
+  <label>รหัสผู้ใช้</label><input id="uid" autocomplete="username" inputmode="text">
+  <label>PIN</label><input id="pin" type="password" autocomplete="current-password" inputmode="numeric">
+  <p><button class="btn" id="goLogin" style="width:100%">เข้าสู่ระบบ</button></p></div>`;
+  const go = e => run(e && e.target.tagName === 'BUTTON' ? e.target : $('#goLogin'), async () => {
+    const d = await api('login', { user_id: $('#uid').value, pin: $('#pin').value });
+    store.set('tk', d.token); store.set('user', JSON.stringify(d.user)); S.user = d.user; startApp();
+  });
+  $('#goLogin').onclick = go;
+  $('#pin').onkeydown = e => { if (e.key === 'Enter') go(); };
+}
+
+/* ===== Shell ===== */
+async function startApp() {
+  S.tab = 'equip';
+  $('#app').innerHTML = `<header class="top"><div><b>ระบบยืมคืนอุปกรณ์วิทย์</b>
+    <small>${esc(S.user.name)} · ${esc(ROLE_TH[S.user.role] || S.user.role)}</small></div>
+    <button class="btn sec sm" style="color:inherit;border-color:currentColor" id="out">ออกจากระบบ</button></header>
+    <div class="wrap" id="view"></div><nav class="tabs" id="tabs"></nav>`;
+  $('#out').onclick = () => logout();
+  const tabs = [['equip','อุปกรณ์'],['scan','สแกน QR'],['mine','ของฉัน']];
+  if (STAFF.indexOf(S.user.role) >= 0) tabs.push(['manage','จัดการ']);
+  $('#tabs').innerHTML = tabs.map(t => `<button data-t="${t[0]}">${t[1]}</button>`).join('');
+  $('#tabs').onclick = e => { const b = e.target.closest('button'); if (b) go(b.dataset.t); };
+  await go('equip');
+}
+async function go(tab) {
+  stopScan(); S.tab = tab;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
+  $('#view').innerHTML = '<p class="mute">กำลังโหลด…</p>';
+  try { await ({ equip: vEquip, scan: vScan, mine: vMine, manage: vManage })[tab](); }
+  catch (e) { $('#view').innerHTML = `<p class="mute">${esc(e.message)}</p>`; }
+}
+
+/* ===== รายการอุปกรณ์ ===== */
+async function vEquip() {
+  const d = await api('listEquipment'); S.items = d.items; S.cats = d.categories;
+  $('#view').innerHTML = `<input id="q" placeholder="ค้นหาชื่อ รหัส หรือที่เก็บ" value="${esc(S.q)}"><div id="list"></div>`;
+  const draw = () => {
+    S.q = $('#q').value.trim().toLowerCase();
+    const rows = S.items.filter(i => (i.name + i.eq_id + i.location).toLowerCase().includes(S.q));
+    $('#list').innerHTML = rows.length ? rows.map(i => `<div class="card"><div class="row">
+      <div><b>${esc(i.name)}</b><div class="mute">${esc(i.eq_id)} · ${esc(i.location || 'ไม่ระบุที่เก็บ')}</div>
+      <div class="mute">คงเหลือ ${esc(i.qty_available)} / ${esc(i.qty_total)}</div></div>
+      <div style="text-align:right"><span class="chip ${esc(i.status)}">${esc(ST_TH[i.status] || i.status)}</span><br>
+      <button class="btn sm" style="margin-top:8px" data-eq="${esc(i.eq_id)}">ดู / ยืม</button></div></div></div>`).join('')
+      : '<p class="mute">ยังไม่มีอุปกรณ์ที่ตรงกับคำค้น ผู้จัดการห้องปฏิบัติการเพิ่มอุปกรณ์ได้ที่แท็บ "จัดการ"</p>';
+  };
+  $('#q').oninput = draw; draw();
+  $('#list').onclick = e => { const b = e.target.closest('[data-eq]'); if (b) openEq(b.dataset.eq); };
+}
+
+/* ===== รายละเอียด + ยืม + คืน ===== */
+function openModal(html) { $('#sheet').innerHTML = html; $('#modal').classList.add('open'); }
+function closeModal() { $('#modal').classList.remove('open'); $('#sheet').innerHTML = ''; }
+$('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
+
+async function openEq(id) {
+  try {
+    const d = await api('getEquipment', { eq_id: String(id).trim() }), i = d.item, staff = STAFF.indexOf(S.user.role) >= 0;
+    const can = i.status !== 'repair' && i.status !== 'written_off' && Number(i.qty_available) > 0;
+    const direct = !(S.user.role === 'student' || i.requires_approval === true) || APPROVER.indexOf(S.user.role) >= 0;
+    openModal(`<div class="row"><b style="font-size:1.1rem">${esc(i.name)}</b><button class="btn sec sm" id="cl">ปิด</button></div>
+      <p class="mute">${esc(i.eq_id)} · ${esc(i.location || 'ไม่ระบุที่เก็บ')} · คงเหลือ ${esc(i.qty_available)}/${esc(i.qty_total)}
+      <span class="chip ${esc(i.status)} eq">${esc(ST_TH[i.status] || i.status)}</span></p>
+      ${i.description ? `<p>${esc(i.description)}</p>` : ''}
+      ${i.requires_approval === true ? '<p class="mute">อุปกรณ์นี้ต้องได้รับการอนุมัติจากครูก่อนยืม</p>' : ''}
+      ${can ? `<div class="card"><div class="grid2"><div><label>จำนวน</label><input id="bq" type="number" min="1" max="${esc(i.qty_available)}" value="1"></div>
+      <div><label>ยืมกี่วัน</label><input id="bd" type="number" min="1" value="3"></div></div>
+      ${staff ? '<label>รหัสผู้ยืม (เว้นว่าง = ตัวเอง)</label><input id="bu">' : ''}
+      <p><button class="btn" id="bb" style="width:100%">${direct ? 'ยืมเลย' : 'ส่งคำขอยืม'}</button></p></div>`
+      : '<p class="mute">ตอนนี้ยืมไม่ได้ (ของหมดหรืออยู่ระหว่างซ่อม)</p>'}
+      ${staff && d.loans.length ? '<h4>กำลังถูกยืม</h4>' + d.loans.map(loanRow).join('') : ''}
+      <div id="qr" style="display:flex;justify-content:center;padding:12px"></div>
+      <p class="mute" style="text-align:center">QR ของอุปกรณ์นี้ (เก็บรหัส ${esc(i.eq_id)})</p>`);
+    $('#cl').onclick = closeModal;
+    new QRCode($('#qr'), { text: String(i.eq_id), width: 150, height: 150 });
+    const bb = $('#bb');
+    if (bb) bb.onclick = () => run(bb, async () => {
+      const r = await api('borrow', { eq_id: i.eq_id, qty: $('#bq').value, days: $('#bd').value, user_id: $('#bu') ? $('#bu').value : '' });
+      toast(r.status === 'pending' ? 'ส่งคำขอแล้ว รอครูอนุมัติ' : 'บันทึกการยืมแล้ว คืนภายใน ' + d10(r.due_date));
+      closeModal(); go(S.tab);
+    });
+    bindLoanActions($('#sheet'));
+  } catch (e) { toast(e.message); }
+}
+
+/* ===== แถวรายการยืม + ปุ่มคืน/อนุมัติ ===== */
+function loanRow(l) {
+  const staff = STAFF.indexOf(S.user.role) >= 0;
+  let act = '';
+  if (staff && l.status === 'pending' && APPROVER.indexOf(S.user.role) >= 0)
+    act = `<button class="btn sm" data-ap="${esc(l.loan_id)}">อนุมัติ</button> <button class="btn sec sm" data-rj="${esc(l.loan_id)}">ไม่อนุมัติ</button>`;
+  if (staff && (l.status === 'borrowed' || l.status === 'overdue'))
+    act = `<select data-cond="${esc(l.loan_id)}" style="width:auto;padding:5px"><option value="good">สภาพดี</option><option value="fair">พอใช้</option><option value="damaged">ชำรุด</option></select>
+           <button class="btn sm" data-rt="${esc(l.loan_id)}">รับคืน</button>`;
+  return `<div class="card"><div class="row"><div><b>${esc(l.eq_name)}</b> × ${esc(l.qty)}
+    <div class="mute">${esc(l.user_name)} (${esc(l.user_id)}) · กำหนดคืน ${esc(d10(l.due_date))}</div></div>
+    <span class="chip ${esc(l.status)}">${esc(ST_TH[l.status] || l.status)}</span></div>
+    ${act ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${act}</div>` : ''}</div>`;
+}
+function bindLoanActions(root) {
+  root.onclick = e => {
+    const b = e.target.closest('button[data-ap],button[data-rj],button[data-rt]'); if (!b) return;
+    run(b, async () => {
+      if (b.dataset.rt) {
+        const sel = root.querySelector(`select[data-cond="${b.dataset.rt}"]`);
+        await api('returnItem', { loan_id: b.dataset.rt, condition_in: sel.value });
+        toast(sel.value === 'damaged' ? 'รับคืนแล้ว และบันทึกแจ้งชำรุด' : 'รับคืนเรียบร้อย');
+      } else {
+        await api('approveLoan', { loan_id: b.dataset.ap || b.dataset.rj, reject: !!b.dataset.rj });
+        toast(b.dataset.rj ? 'ปฏิเสธคำขอแล้ว' : 'อนุมัติแล้ว');
+      }
+      closeModal(); go(S.tab);
+    });
+  };
+}
+
+/* ===== สแกน QR ===== */
+function stopScan() {
+  if (S.scanner) { const s = S.scanner; S.scanner = null; s.stop().then(() => s.clear()).catch(() => {}); }
+}
+async function vScan() {
+  $('#view').innerHTML = `<div class="card"><div id="reader"></div><p class="mute" id="sm">กำลังเปิดกล้อง…</p></div>
+    <div class="card"><label>หรือพิมพ์รหัสอุปกรณ์</label><div class="row"><input id="man" placeholder="เช่น EQ0001">
+    <button class="btn" id="mg">เปิด</button></div></div>`;
+  $('#mg').onclick = () => { if ($('#man').value.trim()) openEq($('#man').value); };
+  try {
+    const sc = new Html5Qrcode('reader'); S.scanner = sc;
+    await sc.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, txt => { stopScan(); openEq(txt); });
+    $('#sm').textContent = 'เล็งกล้องไปที่ QR บนอุปกรณ์';
+  } catch (e) { S.scanner = null; $('#sm').textContent = 'เปิดกล้องไม่ได้ อนุญาตการใช้กล้องในเบราว์เซอร์ หรือพิมพ์รหัสด้านล่างแทน'; }
+}
+
+/* ===== ของฉัน ===== */
+async function vMine() {
+  const rows = await api('myLoans');
+  $('#view').innerHTML = '<h3>ประวัติการยืมของฉัน</h3>' +
+    (rows.length ? rows.map(loanRow).join('') : '<p class="mute">ยังไม่มีรายการยืม เลือกอุปกรณ์ที่แท็บ "อุปกรณ์" หรือสแกน QR เพื่อเริ่มยืม</p>');
+}
+
+/* ===== จัดการ (ครู/เจ้าหน้าที่/แอดมิน) ===== */
+async function vManage() {
+  const loans = await api('activeLoans'), r = S.user.role;
+  if (!S.cats.length) S.cats = (await api('listEquipment')).categories;
+  $('#view').innerHTML = `<h3>รายการค้าง (${loans.length})</h3><div id="ml">${loans.length ? loans.map(loanRow).join('') : '<p class="mute">ไม่มีรายการค้าง</p>'}</div>
+  ${MANAGER.indexOf(r) >= 0 ? `<h3>เพิ่มอุปกรณ์</h3><div class="card">
+    <label>ชื่ออุปกรณ์</label><input id="en"><label>หมวดหมู่</label>
+    <select id="ec">${S.cats.map(c => `<option value="${esc(c.cat_id)}">${esc(c.name)}</option>`).join('')}</select>
+    <div class="grid2"><div><label>ที่เก็บ</label><input id="el" placeholder="ห้อง/ตู้/ชั้น"></div><div><label>จำนวน</label><input id="eqn" type="number" min="1" value="1"></div></div>
+    <label><input type="checkbox" id="ea" style="width:auto"> ต้องได้รับอนุมัติก่อนยืม</label>
+    <p><button class="btn" id="es" style="width:100%">บันทึกอุปกรณ์</button></p></div>` : ''}
+  ${r === 'admin' ? `<h3>เพิ่มผู้ใช้</h3><div class="card"><div class="grid2">
+    <div><label>รหัสผู้ใช้</label><input id="nu"></div><div><label>ชื่อ-สกุล</label><input id="nn"></div>
+    <div><label>บทบาท</label><select id="nr">${Object.keys(ROLE_TH).map(k => `<option value="${k}">${ROLE_TH[k]}</option>`).join('')}</select></div>
+    <div><label>ห้อง/ชั้น</label><input id="nc"></div></div>
+    <label>PIN (อย่างน้อย 4 หลัก)</label><input id="np" type="password" inputmode="numeric">
+    <p><button class="btn" id="us" style="width:100%">บันทึกผู้ใช้</button></p></div>` : ''}`;
+  bindLoanActions($('#view'));
+  if ($('#es')) $('#es').onclick = () => run($('#es'), async () => {
+    const d = await api('saveEquipment', { name: $('#en').value, cat_id: $('#ec').value, location: $('#el').value,
+      qty_total: $('#eqn').value, requires_approval: $('#ea').checked });
+    toast('เพิ่มอุปกรณ์แล้ว รหัส ' + d.eq_id); $('#en').value = ''; $('#el').value = '';
+  });
+  if ($('#us')) $('#us').onclick = () => run($('#us'), async () => {
+    await api('addUser', { user_id: $('#nu').value, name: $('#nn').value, role: $('#nr').value, class_room: $('#nc').value, pin: $('#np').value });
+    toast('บันทึกผู้ใช้แล้ว'); ['nu','nn','nc','np'].forEach(k => $('#' + k).value = '');
+  });
+}
+
+/* ===== เริ่มต้น ===== */
+(function init() {
+  try { S.user = JSON.parse(store.get('user') || 'null'); } catch (e) { S.user = null; }
+  if (S.user && store.get('tk')) startApp(); else renderLogin();
+})();
+</script>
+</body>
+</html>
